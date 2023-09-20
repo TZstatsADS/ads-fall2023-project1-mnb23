@@ -1,0 +1,503 @@
+---
+title: "How Does Friendship Change from being Single to being Married?"
+author: "Manan Brahmbhatt"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+![ ](../figs/friends.jpeg)
+
+
+##### This report is an investigation into whether I, a single guy, will be able to continue to be friends with people that are married.
+
+###### HappyDB is a corpus of 100,000 crowd-sourced happy moments via Amazon's Mechanical Turk. You can read more about it on https://arxiv.org/abs/1801.07746
+
+```{r,warning=FALSE, message=FALSE,echo=FALSE}
+library(tm)
+library(tidytext)
+library(tidyverse)
+library(DT)
+library(wordcloud2)
+library(wordcloud)
+library(scales)
+library(gridExtra)
+library(ngram)
+library(igraph)
+library(rsconnect)
+```
+
+I started off by loading the data and processing the text found in 'cleaned_hm.csv'. After that, I combined the cleaned data with the demographic data found in 'demographic.csv'.
+
+
+```{r read data, warning=FALSE, message=FALSE, echo=FALSE}
+urlfile <- '../data/cleaned_hm.csv'
+hm_data <- read_csv(urlfile)
+```
+
+```{r text processing in tm, warning=FALSE, message=FALSE, echo=FALSE}
+corpus <- VCorpus(VectorSource(hm_data$cleaned_hm))%>%
+  tm_map(content_transformer(tolower))%>%
+  tm_map(removePunctuation)%>%
+  tm_map(removeNumbers)%>%
+  tm_map(removeWords, character(0))%>%
+  tm_map(stripWhitespace)
+```
+
+```{r stemming, warning=FALSE, message=FALSE, echo=FALSE}
+stemmed <- tm_map(corpus, stemDocument) %>%
+  tidy() %>%
+  select(text)
+```
+
+```{r tidy dictionary, warning=FALSE, message=FALSE, echo=FALSE}
+dict <- tidy(corpus) %>%
+  select(text) %>%
+  unnest_tokens(dictionary, text)
+```
+
+```{r stopwords, warning=FALSE, message=FALSE, echo=FALSE}
+data("stop_words")
+
+word <- c("happy","ago","yesterday","lot","today","months","month",
+                 "happier","happiest","last","week","past")
+
+stop_words <- stop_words %>%
+  bind_rows(mutate(tibble(word), lexicon = "updated"))
+```
+
+
+```{r tidy stems with dictionary, warning=FALSE, message=FALSE, echo=FALSE}
+completed <- stemmed %>%
+  mutate(id = row_number()) %>%
+  unnest_tokens(stems, text) %>%
+  bind_cols(dict) %>%
+  anti_join(stop_words, by = c("dictionary" = "word"))
+```
+
+```{r stem completion, warning=FALSE, message=FALSE, echo=FALSE}
+completed <- completed %>%
+  group_by(stems) %>%
+  count(dictionary) %>%
+  mutate(word = dictionary[which.max(n)]) %>%
+  ungroup() %>%
+  select(stems, word) %>%
+  distinct() %>%
+  right_join(completed) %>%
+  select(-stems)
+```
+
+
+```{r reverse unnest, warning=FALSE, message=FALSE, echo=FALSE}
+completed <- completed %>%
+  group_by(id) %>%
+  summarise(text = str_c(word, collapse = " ")) %>%
+  ungroup()
+```
+
+```{r cleaned hm_data, warning=FALSE, message=FALSE, echo=FALSE}
+hm_data <- hm_data %>%
+  mutate(id = row_number()) %>%
+  inner_join(completed)
+```
+
+
+```{r export data, warning=FALSE, message=FALSE, echo=FALSE}
+write_csv(hm_data, "../output/processed_moments.csv")
+```
+
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+
+hm_data <- read_csv("../output/processed_moments.csv")
+
+urlfile<-'../data/demographic.csv'
+demo_data <- read_csv(urlfile)
+```
+
+```{r combining data, warning=FALSE, message=FALSE, echo=FALSE}
+hm_data <- hm_data %>%
+  inner_join(demo_data, by = "wid") %>%
+  select(wid,
+         original_hm,
+         gender, 
+         marital, 
+         parenthood,
+         reflection_period,
+         age, 
+         country, 
+         ground_truth_category, 
+         text) %>%
+  mutate(count = sapply(hm_data$text, wordcount)) %>%
+  filter(gender %in% c("m", "f")) %>%
+  filter(marital %in% c("single", "married")) %>%
+  filter(parenthood %in% c("n", "y")) %>%
+  filter(reflection_period %in% c("24h", "3m")) %>%
+  mutate(reflection_period = fct_recode(reflection_period, 
+                                        months_3 = "3m", hours_24 = "24h"))
+```
+
+## Do friends lose importance in the life of a merried individual?
+
+I am at an age now where a lot of people older than me are close to being married, if not already married. We have been friends for a very long time, but I have heard that marriage changes things. I wanted to explore if married people still find happiness from their friends.
+
+I started off by exploring the different sources of happiness for single and married women to see where friends lie on their respective lists.
+
+```{r, echo=FALSE}
+
+single_female <- hm_data[hm_data$gender=="f" & hm_data$marital=="single",]
+married_female <- hm_data[hm_data$gender=="f" & hm_data$marital=="married",]
+female <- hm_data[hm_data$gender=="f",]
+```
+
+```{r, echo=FALSE}
+
+bag_of_words_female <-  female %>%
+  unnest_tokens(word, text)
+
+```
+
+
+```{r, warning=FALSE, echo=FALSE}
+
+temp <- bag_of_words_female %>%
+      count(marital, word) %>%
+      group_by(marital) %>%
+      mutate(proportion = n / sum(n)) %>% 
+      select(-n) %>% 
+      spread(marital, proportion)
+    
+ggplot(temp, 
+       aes_string(x = colnames(temp)[2], y = colnames(temp)[3]),
+       color = abs(colnames(temp)[3] - colnames(temp)[2])) +
+  geom_abline(color = "gray40", lty = 2) +
+  geom_jitter(alpha = 0.1, size = 1, width = 0.3, height = 0.3) +
+  geom_text(aes(label = word), check_overlap = TRUE, vjust = 1.5) +
+  labs(title = "Proportion of Happy Words for Single and Married Females") + 
+  scale_x_log10(labels = percent_format()) +
+  scale_y_log10(labels = percent_format()) +
+  scale_color_gradient(limits = c(0, 0.001), low = "darkslategray4", high = "gray75") +
+  theme(legend.position="none")
+
+```
+
+
+I see "friend" pretty high up on this plot. Awesome! Now let's see where it ranks on each respective group's happy moments.
+
+```{r, message=FALSE,echo=FALSE}
+bag_of_words_married <-  married_female %>%
+  unnest_tokens(word, text)
+
+word_count_married <- bag_of_words_married %>%
+  count(word, sort = TRUE)
+
+bag_of_words_single <-  single_female %>%
+  unnest_tokens(word, text)
+
+word_count_single <- bag_of_words_single %>%
+  count(word, sort = TRUE)
+```
+
+```{r,warning=FALSE, message=FALSE,echo=FALSE}
+ word_count_married[1:20,] %>%
+      mutate(word = reorder(word, n)) %>%
+      ggplot(aes(x=word, y=n)) +
+      geom_bar(stat = 'identity',color='black') + 
+      labs(title = "Frequency of Happy Words for Married Females")+
+      xlab("Words") +
+      ylab("Word Frequency") + 
+      coord_flip()
+
+wordcloud(word_count_married$word,word_count_married$n ,
+          max.words = 100,
+          min.freq=1,
+          random.order=FALSE,
+          rot.per=0.3,
+          use.r.layout=T,
+          random.color=FALSE,
+          colors=brewer.pal(12,"Paired"))
+``` 
+
+The wordcloud and plot for married women shows that "friend" is not the highest source of happy moments, though it is definitely near the top.
+
+```{r,warning=FALSE, message=FALSE,echo=FALSE}
+ word_count_single[1:20,] %>%
+      mutate(word = reorder(word, n)) %>%
+      ggplot(aes(x=word, y=n)) +
+      geom_bar(stat = 'identity',color='black') + 
+      labs(title = "Frequency of Happy Words for Single Females")+
+      xlab("Words") +
+      ylab("Word Frequency") + 
+      coord_flip()
+
+wordcloud(word_count_single$word,word_count_single$n ,
+          max.words = 100,
+          min.freq=1,
+          random.order=FALSE,
+          rot.per=0.3,
+          use.r.layout=T,
+          random.color=FALSE,
+          colors=brewer.pal(12,"Paired"))
+``` 
+
+
+From the wordclouds and plots of both single and married women, it is evident that friends remain high up on an individual's happy moments. But, there is a  difference between married and single females: "friend" is the top word for single females, while it drops to fourth for married females. That is still encouraging for single friends.
+
+
+
+##### I do a similar exploration for married and single males.
+
+```{r, echo=FALSE}
+
+single_male <- hm_data[hm_data$gender=="m" & hm_data$marital=="single",]
+married_male <- hm_data[hm_data$gender=="m" & hm_data$marital=="married",]
+male <- hm_data[hm_data$gender=="m",]
+```
+
+```{r, echo=FALSE}
+
+bag_of_words_male <-  male %>%
+  unnest_tokens(word, text)
+
+```
+
+
+```{r, warning=FALSE, echo=FALSE}
+
+temp <- bag_of_words_male %>%
+      count(marital, word) %>%
+      group_by(marital) %>%
+      mutate(proportion = n / sum(n)) %>% 
+      select(-n) %>% 
+      spread(marital, proportion)
+    
+ggplot(temp, 
+       aes_string(x = colnames(temp)[2], y = colnames(temp)[3]),
+       color = abs(colnames(temp)[3] - colnames(temp)[2])) +
+  geom_abline(color = "gray40", lty = 2) +
+  geom_jitter(alpha = 0.1, size = 1, width = 0.3, height = 0.3) +
+  geom_text(aes(label = word), check_overlap = TRUE, vjust = 1.5) +
+  labs(title = "Proportion of Words for Single and Married Males") + 
+  scale_x_log10(labels = percent_format()) +
+  scale_y_log10(labels = percent_format()) +
+  scale_color_gradient(limits = c(0, 0.001), low = "darkslategray4", high = "gray75") +
+  theme(legend.position="none")
+
+```
+```{r, message=FALSE,echo=FALSE}
+bag_of_words_married <-  married_male %>%
+  unnest_tokens(word, text)
+
+word_count_married <- bag_of_words_married %>%
+  count(word, sort = TRUE)
+
+bag_of_words_single <-  single_male %>%
+  unnest_tokens(word, text)
+
+word_count_single <- bag_of_words_single %>%
+  count(word, sort = TRUE)
+```
+
+```{r,warning=FALSE, message=FALSE,echo=FALSE}
+ word_count_married[1:20,] %>%
+      mutate(word = reorder(word, n)) %>%
+      ggplot(aes(x=word, y=n)) +
+      geom_bar(stat = 'identity',color='black') + 
+      labs(title = "Frequency of Happy Words for Married Males")+
+      xlab("Words") +
+      ylab("Word Frequency") + 
+      coord_flip()
+
+wordcloud(word_count_married$word,word_count_married$n ,
+          max.words = 100,
+          min.freq=1,
+          random.order=FALSE,
+          rot.per=0.3,
+          use.r.layout=T,
+          random.color=FALSE,
+          colors=brewer.pal(12,"Paired"))
+``` 
+
+```{r,warning=FALSE, message=FALSE,echo=FALSE}
+ word_count_single[1:20,] %>%
+      mutate(word = reorder(word, n)) %>%
+      ggplot(aes(x=word, y=n)) +
+      geom_bar(stat = 'identity',color='black') + 
+      labs(title = "Frequency of Happy Words for Single Males")+
+      xlab("Words") +
+      ylab("Word Frequency") + 
+      coord_flip()
+
+wordcloud(word_count_single$word,word_count_single$n ,
+          max.words = 100,
+          min.freq=1,
+          random.order=FALSE,
+          rot.per=0.3,
+          use.r.layout=T,
+          random.color=FALSE,
+          colors=brewer.pal(12,"Paired"))
+``` 
+
+
+#### The exact same conclusion can be found for females and males: there is a difference in the top moments of happiness for married and single individuals, but friends still remain near the top. Friends remain to be an important relationship for everyone, married or not. However, as new relationships are built, they tend to become a higher source of happiness for married individuals.
+
+
+
+## How can I continue to keep and grow my frienship with a married individual?
+
+
+All this information is encouraging. However, I wanted to dive a bit deeper into this question. What is it about friends that makes people happy? What can I do to ensure that I can continue to be friends with those that are married?
+
+For this, I wanted to compare what made single people happy about their friends before their marriage, and if that has changed after marriage. Do I need to change my mentality when it comes to interacting with my married friends? If so, how?
+
+To explore this question, I extracted all the data from married and single females' happy moments in which they mentioned "friend".
+
+```{r, echo=FALSE}
+friend_married <- married_female[grepl("friend",married_female$text),]
+friend_single <- single_female[grepl("friend",single_female$text),]
+```
+
+
+I ran a similar analysis of word frequency for married and single women to find the most cited sources of happiness from friends. I ignored the word "friend" from the analysis and chose to look at the rest of the words.
+
+```{r, echo=FALSE}
+
+bag_of_words_friend_married <-  friend_married %>%
+  unnest_tokens(word, text)
+
+word_count_friend_married <- bag_of_words_friend_married %>%
+  count(word, sort = TRUE)
+
+word_count_friend_married <- word_count_friend_married[-c(which(word_count_friend_married$word=="friend")),]
+
+ word_count_friend_married[1:20,] %>%
+      mutate(word = reorder(word, n)) %>%
+      ggplot(aes(x=word, y=n)) +
+      geom_bar(stat = 'identity',color='black') + 
+      labs(title = "Married Females - What about Friends Makes Them Happy?")+
+      xlab("Words") +
+      ylab("Word Frequency") + 
+      coord_flip()
+```
+
+```{r, echo=FALSE}
+
+bag_of_words_friend_single <-  friend_single %>%
+  unnest_tokens(word, text)
+
+word_count_friend_single <- bag_of_words_friend_single %>%
+  count(word, sort = TRUE)
+
+word_count_friend_single <- word_count_friend_single[-c(which(word_count_friend_single$word=="friend")),]
+
+ word_count_friend_single[1:20,] %>%
+      mutate(word = reorder(word, n)) %>%
+      ggplot(aes(x=word, y=n)) +
+      geom_bar(stat = 'identity',color='black') + 
+      labs(title = "Single Females - What about Friends Makes Them Happy?")+
+      xlab("Words") +
+      ylab("Word Frequency") + 
+      coord_flip()
+```
+
+The frequency charts show that there are a few words that remain amongst the top for both groups, such as time, day and birthday. I want to simplify that by finding those words that are in the top 10 most used words for both groups. What is it about friends that make people happy regardless of marital status?
+
+```{r, echo=FALSE}
+
+top10_married <- word_count_friend_married %>% 
+  arrange(-n) %>% 
+  head(10) %>% 
+  select(word, n)
+
+top10_single <- word_count_friend_single %>% 
+  arrange(-n) %>% 
+  head(10) %>% 
+  select(word, n)
+
+common_top10 <- top10_married %>%
+  inner_join(top10_single, by = "word", suffix = c("_married","_single")) %>%
+  mutate(total_n = n_married + n_single) %>%
+  arrange(-total_n)
+
+head(as.data.frame(common_top10),10)
+```
+
+###### Top Common Happy Words for Friends Between Single and Married Women
+
+##### Let's see what this the most common words for men (running the same analysis as for women) are before drawing conclusions.
+
+```{r, echo=FALSE}
+friend_married <- married_male[grepl("friend",married_male$text),]
+friend_single <- single_male[grepl("friend",single_male$text),]
+```
+
+```{r, echo=FALSE}
+
+bag_of_words_friend_married <-  friend_married %>%
+  unnest_tokens(word, text)
+
+word_count_friend_married <- bag_of_words_friend_married %>%
+  count(word, sort = TRUE)
+
+word_count_friend_married <- word_count_friend_married[-c(which(word_count_friend_married$word=="friend")),]
+
+ word_count_friend_married[1:20,] %>%
+      mutate(word = reorder(word, n)) %>%
+      ggplot(aes(x=word, y=n)) +
+      geom_bar(stat = 'identity',color='black') + 
+      labs(title = "Married Males - What about Friends Makes Them Happy?")+
+      xlab("Words") +
+      ylab("Word Frequency") + 
+      coord_flip()
+```
+
+```{r, echo=FALSE}
+
+bag_of_words_friend_single <-  friend_single %>%
+  unnest_tokens(word, text)
+
+word_count_friend_single <- bag_of_words_friend_single %>%
+  count(word, sort = TRUE)
+
+word_count_friend_single <- word_count_friend_single[-c(which(word_count_friend_single$word=="friend")),]
+
+ word_count_friend_single[1:20,] %>%
+      mutate(word = reorder(word, n)) %>%
+      ggplot(aes(x=word, y=n)) +
+      geom_bar(stat = 'identity',color='black') + 
+      labs(title = "Single Males - What about Friends Makes Them Happy?")+
+      xlab("Words") +
+      ylab("Word Frequency") + 
+      coord_flip()
+```
+
+
+```{r, echo=FALSE}
+
+top10_married <- word_count_friend_married %>% 
+  arrange(-n) %>% 
+  head(10) %>% 
+  select(word, n)
+
+top10_single <- word_count_friend_single %>% 
+  arrange(-n) %>% 
+  head(10) %>% 
+  select(word, n)
+
+common_top10 <- top10_married %>%
+  inner_join(top10_single, by = "word", suffix = c("_married","_single")) %>%
+  mutate(total_n = n_married + n_single) %>%
+  arrange(-total_n)
+
+head(as.data.frame(common_top10), 10)
+```
+
+###### Top Common Happy Words for Friends Between Single and Married Men
+
+Based on the data found above, "time", "day", and "birthday" are the most common words of happy moments when either group - married or single, male or female - mention friends. 
+
+From this, it seems to me that spending time with my friends, regardless of their marital status, will make them the most happy, especially if it is their birthday. Along with that, spending time and "talking" with my female friends and "playing" with my male friends will also go a long way to maintain our friendship.
+
+### From this entire exploration, I can conclude that regardless of whether my friends are single or married, I should always make time for them. Our friendship will continue to remain strong if we continue to spend time together.
